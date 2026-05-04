@@ -32,16 +32,38 @@ type Fetcher interface {
 var _ Fetcher = HTTPFetcher{}
 
 // HTTPFetcher is used to get a file from a http:// or https:// schema path.
-type HTTPFetcher struct{}
+type HTTPFetcher struct {
+	EnableNetrc bool
+	NetrcFile   string
+}
 
 // Get gets the file and returns an stream to read the file.
-func (HTTPFetcher) Get(uri string) (io.ReadCloser, error) {
+func (f HTTPFetcher) Get(uri string) (io.ReadCloser, error) {
 	klog.V(2).Infof("Fetching %q", uri)
-	resp, err := http.Get(uri)
+
+	req, err := http.NewRequest("GET", uri, http.NoBody)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to create request for %q", uri)
+	}
+
+	// Check for netrc credentials
+	if f.EnableNetrc {
+		entry, err := FindNetrcEntry(uri, f.NetrcFile)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to load netrc credentials")
+		}
+		if entry != nil {
+			klog.V(3).Infof("Using netrc credentials for %s", entry.Machine)
+			req.SetBasicAuth(entry.Login, entry.Password)
+		}
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to download %q", uri)
 	}
 	if resp.StatusCode > 200 {
+		resp.Body.Close()
 		return nil, errors.Errorf("failed to download %q, status code %d", uri, resp.StatusCode)
 	}
 	return resp.Body, nil
